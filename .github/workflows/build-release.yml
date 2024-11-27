@@ -65,11 +65,18 @@ jobs:
           linux-headers-$(uname -r)
 
     - name: Install Cilium (and Cilium dependencies)
-      run: |
+        run: |
         # Clone Cilium's main branch from GitHub
         git clone --branch main https://github.com/cilium/cilium.git /tmp/cilium
         cd /tmp/cilium
+    
+        # Ensure the necessary directories exist and set the correct permissions
+        sudo mkdir -p /var/lib/cilium
+        sudo chmod 0750 /var/lib/cilium
+    
+        # Proceed with the Cilium installation
         make install
+
 
 
     - name: Prepare OpenWrt build environment
