@@ -1,129 +1,128 @@
-name: Build OpenWRT with Cilium
+name: Build releases with Cilium and Kernel 6.12
 
 on:
   workflow_dispatch:
     inputs:
       device:
-        description: 'Build target device'
+        description: 'Select the build device'
         required: true
         default: 'x86_64'
         type: choice
         options:
           - 'x86_64'
       version:
-        description: 'OpenWRT version'
+        description: 'Select the build version'
         required: true
-        default: 'snapshot'
+        default: 'snapshot-24.10'
         type: choice
         options:
-          - 'snapshot'
+          - 'snapshot-24.10'
       ccache:
-        description: 'Enable ccache (cache to speed up builds)'
+        description: 'Enable ccache (Use Cache to speed up next build)'
         type: boolean
         default: false
+      lan_addr:
+        description: 'Setting default LAN address'
+        required: true
+        default: '10.0.0.1'
+        type: string
       build_options:
-        description: 'Custom build options'
+        description: 'Build options (separate multiple options with spaces)'
         required: false
-        default: 'BUILD_FAST=y ENABLE_BPF=y'
+        default: 'BUILD_FAST=y ENABLE_BPF=y ENABLE_LTO=y ENABLE_LRNG=y ENABLE_MOLD=y KERNEL_CLANG_LTO=y'
         type: string
 
 jobs:
   build:
-    name: Build OpenWRT ${{ github.event.inputs.device }}
-    runs-on: ubuntu-22.04
+    name: Build x86_64 with Cilium and Kernel 6.12
+    runs-on: ubuntu-24.04
     defaults:
       run:
         shell: bash
 
     steps:
-      # 检出代码
-      - name: Checkout
-        uses: actions/checkout@v4
+    - name: Checkout OpenWrt source
+      uses: actions/checkout@main
+      with:
+        path: r4s_build_script
 
-      # 配置时区和环境变量
-      - name: Setup environment
-        run: |
-          sudo timedatectl set-timezone 'Asia/Shanghai'
-          git config --global user.name 'github-actions'
-          git config --global user.email 'actions@github.com'
-          echo "build_dir=/builder" >> $GITHUB_ENV
-          echo "build_device=${{ github.event.inputs.device }}" >> $GITHUB_ENV
-          echo "build_options=${{ github.event.inputs.build_options }}" >> $GITHUB_ENV
+    - name: Setup variables
+      run: |
+        sudo timedatectl set-timezone 'Asia/Shanghai'
+        git config --global user.name 'actions'
+        git config --global user.email 'action@github.com'
+        echo build_dir="/builder" >> "$GITHUB_ENV"
+        echo build_version="dev" >> "$GITHUB_ENV"
 
-      # 安装基础工具和依赖
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential gcc g++ flex bison gawk gettext libssl-dev \
-                                  zlib1g-dev file wget git python3-distutils python3-pip unzip curl \
-                                  bc tar rsync
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          clang llvm libbpf-dev \
+          libmnl-dev iproute2 \
+          curl git make \
+          gcc g++ bpfcc-tools \
+          linux-headers-$(uname -r)
 
-      # 下载 OpenWRT 源码
-      - name: Clone OpenWRT source
-        run: |
-          git clone --depth 1 -b master https://github.com/openwrt/openwrt.git /builder/openwrt
-          cd /builder/openwrt
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+    - name: Install Cilium (and Cilium dependencies)
+      run: |
+        git clone --branch master https://github.com/cilium/cilium.git /tmp/cilium
+        cd /tmp/cilium
+        make install
 
-      # 配置内核选项
-      - name: Configure Kernel for eBPF and XDP
-        run: |
-          cd /builder/openwrt
-          echo "CONFIG_KERNEL_BPF=y" >> target/linux/x86/config-6.12
-          echo "CONFIG_KERNEL_BPF_SYSCALL=y" >> target/linux/x86/config-6.12
-          echo "CONFIG_KERNEL_BPF_JIT=y" >> target/linux/x86/config-6.12
-          echo "CONFIG_KERNEL_XDP=y" >> target/linux/x86/config-6.12
-          echo "CONFIG_KERNEL_BPF_LSM=y" >> target/linux/x86/config-6.12
-          echo "CONFIG_KERNEL_NET_CLS_BPF=y" >> target/linux/x86/config-6.12
-          echo "CONFIG_KERNEL_NET_ACT_BPF=y" >> target/linux/x86/config-6.12
+    - name: Prepare OpenWrt build environment
+      run: |
+        echo "Preparing OpenWrt build system"
+        git clone https://git.openwrt.org/openwrt/openwrt.git /tmp/openwrt
+        cd /tmp/openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
 
-      # 添加 Cilium 支持
-      - name: Add Cilium
-        run: |
-          mkdir -p /builder/openwrt/package/cilium/files/usr/sbin
-          curl -L -o /builder/openwrt/package/cilium/files/usr/sbin/cilium \
-            https://github.com/cilium/cilium/releases/download/v1.14.0/cilium-linux-amd64
-          chmod +x /builder/openwrt/package/cilium/files/usr/sbin/cilium
-          mkdir -p /builder/openwrt/package/cilium/files/etc/init.d
-          cat <<'EOF' > /builder/openwrt/package/cilium/files/etc/init.d/cilium
-          #!/bin/sh /etc/rc.common
-          START=99
-          STOP=10
-          start() {
-              echo "Starting Cilium Agent..."
-              /usr/sbin/cilium-agent --config-dir=/etc/cilium --enable-core-dumps &
-          }
-          stop() {
-              echo "Stopping Cilium Agent..."
-              killall cilium-agent
-          }
-          EOF
-          chmod +x /builder/openwrt/package/cilium/files/etc/init.d/cilium
+    - name: Apply Cilium as firewall
+      run: |
+        mkdir -p /tmp/openwrt/package/firewall/cilium
+        cp -r /tmp/cilium /tmp/openwrt/package/firewall/cilium
+        echo 'config firewall cilium' > /tmp/openwrt/package/firewall/cilium/config
+        echo '    option enabled 1' >> /tmp/openwrt/package/firewall/cilium/config
+        echo '    option interface lan' >> /tmp/openwrt/package/firewall/cilium/config
+        echo '    option policy allow' >> /tmp/openwrt/package/firewall/cilium/config
 
-      # 启用 CCACHE
-      - name: Enable CCACHE (Optional)
-        if: ${{ github.event.inputs.ccache == 'true' }}
-        run: |
-          echo "CONFIG_CCACHE=y" >> .config
+    - name: Compile OpenWrt with Cilium
+      working-directory: /tmp/openwrt
+      id: compile
+      continue-on-error: true
+      run: |
+        export ${{ github.event.inputs.build_options }} LAN=${{ github.event.inputs.lan_addr }} USE_GCC15=y
+        bash <(curl -sS http://127.0.0.1:8080/build.sh) ${{ env.build_version }} x86_64
+        cd openwrt
+        tags=snapshot-24.10-$(git log -n 1 --date=format:"%Y%m%d" --format="%cd")-$(git log --pretty=format:"%h" -1)
+        echo "latest_release=$tags" >>$GITHUB_ENV
 
-      # 开始编译
-      - name: Compile OpenWRT
-        run: |
-          cd /builder/openwrt
-          make menuconfig
-          make V=s -j$(nproc)
+    - name: Prepare Firmware Files
+      working-directory: /tmp/openwrt
+      run: |
+        mkdir -p rom info
+        cp -a /tmp/openwrt/bin/targets/x86/*/*-ext4-combined-efi.img.gz rom/
+        cp -a /tmp/openwrt/bin/targets/x86/*/*-squashfs-combined-efi.img.gz rom/
+        cp -a /tmp/openwrt/bin/targets/x86/*/*-generic-rootfs.tar.gz rom/
+        cp -a /tmp/openwrt/bin/targets/x86/*/*-x86-64-generic.manifest info/manifest.txt
+        cp -a /tmp/openwrt/bin/targets/x86/*/config.buildinfo info/config.buildinfo
+        cd rom && sha256sum *gz > ../info/sha256sums.txt
 
-      # 打包固件
-      - name: Package Firmware
-        run: |
-          cd /builder/openwrt
-          mkdir -p /builder/output
-          cp -r bin/targets/x86/64/* /builder/output
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: x86_64-openwrt-with-cilium-${{ env.latest_release }}
+        path: ${{ env.build_dir }}/rom/*
 
-      # 上传固件
-      - name: Upload Firmware
-        uses: actions/upload-artifact@v4
-        with:
-          name: openwrt-${{ github.event.inputs.device }}
-          path: /builder/output
+    - name: Create release with Cilium
+      continue-on-error: true
+      uses: ncipollo/release-action@v1
+      with:
+        name: ${{ env.latest_release }}
+        allowUpdates: true
+        tag: ${{ env.latest_release }}
+        commit: master
+        replacesArtifacts: true
+        token: ${{ secrets.GITHUB_TOKEN }}
+        artifacts: ${{ env.build_dir }}/rom/*
