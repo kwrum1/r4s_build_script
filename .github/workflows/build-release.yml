@@ -71,11 +71,15 @@ jobs:
         cd /tmp/cilium
     
         # Ensure the necessary directories exist and set the correct permissions
-        sudo mkdir -p /var/lib/cilium
-        sudo chmod 0750 /var/lib/cilium
+        sudo mkdir -p /var/lib/cilium/bpf
+        sudo chmod 0750 /var/lib/cilium /var/lib/cilium/bpf
+    
+        # Clean any existing files in /var/lib/cilium/bpf
+        sudo rm -rf /var/lib/cilium/bpf/*
     
         # Proceed with the Cilium installation
         make install
+
 
 
 
