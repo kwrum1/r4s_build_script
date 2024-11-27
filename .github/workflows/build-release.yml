@@ -66,9 +66,11 @@ jobs:
 
     - name: Install Cilium (and Cilium dependencies)
       run: |
-        git clone --branch master https://github.com/cilium/cilium.git /tmp/cilium
+        # Clone Cilium's main branch from GitHub
+        git clone --branch main https://github.com/cilium/cilium.git /tmp/cilium
         cd /tmp/cilium
         make install
+
 
     - name: Prepare OpenWrt build environment
       run: |
