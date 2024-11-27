@@ -1,237 +1,129 @@
-name: Build releases
+name: Build OpenWRT with Cilium
 
 on:
   workflow_dispatch:
     inputs:
       device:
-        description: 'Select the build device'
+        description: 'Build target device'
         required: true
         default: 'x86_64'
         type: choice
         options:
-          - 'armv8'
-          - 'nanopi-r4s'
-          - 'nanopi-r5s'
-          - 'netgear_r8500'
           - 'x86_64'
       version:
-        description: 'Select the build version'
+        description: 'OpenWRT version'
         required: true
-        default: 'snapshot-24.10'
+        default: 'snapshot'
         type: choice
         options:
-        #  - 'release'
-          - 'snapshot-24.10'
+          - 'snapshot'
       ccache:
-        description: 'Enable ccache (Use Cache to speed up next build)'
+        description: 'Enable ccache (cache to speed up builds)'
         type: boolean
         default: false
-      lan_addr:
-        description: 'Setting default LAN address'
-        required: true
-        default: '10.0.0.1'
-        type: string
       build_options:
-        description: 'Build options (separate multiple options with spaces)'
+        description: 'Custom build options'
         required: false
-        default: 'BUILD_FAST=y ENABLE_BPF=y ENABLE_LTO=y ENABLE_LRNG=y ENABLE_MOLD=y KERNEL_CLANG_LTO=y'
+        default: 'BUILD_FAST=y ENABLE_BPF=y'
         type: string
 
 jobs:
   build:
-    name: Build ${{ github.event.inputs.device }}
-    runs-on: ubuntu-24.04
+    name: Build OpenWRT ${{ github.event.inputs.device }}
+    runs-on: ubuntu-22.04
     defaults:
       run:
         shell: bash
 
     steps:
-    - name: Checkout
-      continue-on-error: true
-      uses: actions/checkout@main
-      with:
-        path: r4s_build_script
+      # 检出代码
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Setup variables
-      run: |
-        sudo timedatectl set-timezone 'Asia/Shanghai'
-        git config --global user.name 'actions'
-        git config --global user.email 'action@github.com'
-        echo build_dir="/builder" >> "$GITHUB_ENV"
-        [ "${{ github.event.inputs.version }}" = release ] && echo build_version="rc2" >> "$GITHUB_ENV" || echo build_version="dev" >> "$GITHUB_ENV"
+      # 配置时区和环境变量
+      - name: Setup environment
+        run: |
+          sudo timedatectl set-timezone 'Asia/Shanghai'
+          git config --global user.name 'github-actions'
+          git config --global user.email 'actions@github.com'
+          echo "build_dir=/builder" >> $GITHUB_ENV
+          echo "build_device=${{ github.event.inputs.device }}" >> $GITHUB_ENV
+          echo "build_options=${{ github.event.inputs.build_options }}" >> $GITHUB_ENV
 
-    - name: Show system
-      run: |
-        echo -e "\n\e[1;32mCPU:\e[0m"
-        echo "$(grep 'model name' /proc/cpuinfo | head -1 | awk -F ': ' '{print $2}') ($(grep 'cpu MHz' /proc/cpuinfo | head -1 | awk -F ': ' '{print $2}')MHz) x $(grep processor /proc/cpuinfo  | wc -l)"
-        echo -e "\n\e[1;32mMemory:\e[0m"
-        free -h
-        echo -e "\n\e[1;32mStorage:\e[0m"
-        df -Th / /mnt
-        echo -e "\n\e[1;32mSystem:\e[0m"
-        lsb_release -a
-        echo -e "\n\e[1;32mKernel:\e[0m"
-        uname -a
-        echo
+      # 安装基础工具和依赖
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gcc g++ flex bison gawk gettext libssl-dev \
+                                  zlib1g-dev file wget git python3-distutils python3-pip unzip curl \
+                                  bc tar rsync
 
-    - name: Install Caddy Server
-      run: |
-        sudo curl -sL -o /usr/bin/caddy https://github.com/sbwml/r4s_build_script/releases/download/caddy/caddy
-        sudo chmod 755 /usr/bin/caddy
-        echo ":8080 {" > caddyfile
-        echo "    root * $(pwd)/r4s_build_script" >> caddyfile
-        echo "    file_server browse" >> caddyfile
-        echo "}" >> caddyfile
-        sudo /usr/bin/caddy start --config caddyfile --adapter caddyfile
+      # 下载 OpenWRT 源码
+      - name: Clone OpenWRT source
+        run: |
+          git clone --depth 1 -b master https://github.com/openwrt/openwrt.git /builder/openwrt
+          cd /builder/openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
-    - name: Free disk space
-      uses: sbwml/actions@free-disk
-      with:
-        build-mount-path: /builder
+      # 配置内核选项
+      - name: Configure Kernel for eBPF and XDP
+        run: |
+          cd /builder/openwrt
+          echo "CONFIG_KERNEL_BPF=y" >> target/linux/x86/config-6.12
+          echo "CONFIG_KERNEL_BPF_SYSCALL=y" >> target/linux/x86/config-6.12
+          echo "CONFIG_KERNEL_BPF_JIT=y" >> target/linux/x86/config-6.12
+          echo "CONFIG_KERNEL_XDP=y" >> target/linux/x86/config-6.12
+          echo "CONFIG_KERNEL_BPF_LSM=y" >> target/linux/x86/config-6.12
+          echo "CONFIG_KERNEL_NET_CLS_BPF=y" >> target/linux/x86/config-6.12
+          echo "CONFIG_KERNEL_NET_ACT_BPF=y" >> target/linux/x86/config-6.12
 
-    - name: Build System Setup
-      uses: sbwml/actions@openwrt-build-setup
+      # 添加 Cilium 支持
+      - name: Add Cilium
+        run: |
+          mkdir -p /builder/openwrt/package/cilium/files/usr/sbin
+          curl -L -o /builder/openwrt/package/cilium/files/usr/sbin/cilium \
+            https://github.com/cilium/cilium/releases/download/v1.14.0/cilium-linux-amd64
+          chmod +x /builder/openwrt/package/cilium/files/usr/sbin/cilium
+          mkdir -p /builder/openwrt/package/cilium/files/etc/init.d
+          cat <<'EOF' > /builder/openwrt/package/cilium/files/etc/init.d/cilium
+          #!/bin/sh /etc/rc.common
+          START=99
+          STOP=10
+          start() {
+              echo "Starting Cilium Agent..."
+              /usr/sbin/cilium-agent --config-dir=/etc/cilium --enable-core-dumps &
+          }
+          stop() {
+              echo "Stopping Cilium Agent..."
+              killall cilium-agent
+          }
+          EOF
+          chmod +x /builder/openwrt/package/cilium/files/etc/init.d/cilium
 
-    - name: Install LLVM
-      uses: sbwml/actions@install-llvm
+      # 启用 CCACHE
+      - name: Enable CCACHE (Optional)
+        if: ${{ github.event.inputs.ccache == 'true' }}
+        run: |
+          echo "CONFIG_CCACHE=y" >> .config
 
-    - name: Restore Cached
-      if: ${{ github.event.inputs.ccache == 'true' && github.event.inputs.device != 'armv8' && github.event.inputs.device != 'nanopi-r4s' }}
-      uses: actions/cache/restore@v4
-      with:
-        path: /builder/.ccache
-        key: openwrt-24.10-${{ github.event.inputs.device }}-ccache
+      # 开始编译
+      - name: Compile OpenWRT
+        run: |
+          cd /builder/openwrt
+          make menuconfig
+          make V=s -j$(nproc)
 
-    - name: Restore Cached (releases)
-      if: ${{ github.event.inputs.ccache == 'true' && github.event.inputs.device == 'armv8' || github.event.inputs.device == 'nanopi-r4s' }}
-      continue-on-error: true
-      working-directory: /builder
-      run: |
-        curl -s https://api.github.com/repos/${{ github.repository }}/releases | grep 'browser_download_url' | grep ccache | grep ${{ github.event.inputs.device }} | awk -F '"' '{print $4}' | grep -v '^$' | xargs -n 1 wget -q
-        cat ${{ github.event.inputs.device }}.tar.* | tar -xf - || true
-        rm -rf ${{ github.event.inputs.device }}.tar.* || true
-        [ -d .ccache ] && cache_size=$(du -sb .ccache | awk '{print $1}') || cache_size=0
-        cache_size_mb=$(echo "scale=0; ${cache_size} / (1024 * 1024)" | bc)
-        echo "Cache Size: ~${cache_size_mb} MB (${cache_size} B)"
-        echo "Cache restored successfully"
-        echo "Cache restored from key: ${{ github.event.inputs.device }}"
+      # 打包固件
+      - name: Package Firmware
+        run: |
+          cd /builder/openwrt
+          mkdir -p /builder/output
+          cp -r bin/targets/x86/64/* /builder/output
 
-    - name: Compile OpenWrt
-      working-directory: /builder
-      id: compile
-      continue-on-error: true
-      run: |
-        export ${{ github.event.inputs.build_options }} LAN=${{ github.event.inputs.lan_addr }} USE_GCC15=y
-        [ ${{ github.event.inputs.ccache }} = 'true' ] && export ENABLE_CCACHE=y
-        bash <(curl -sS http://127.0.0.1:8080/build.sh) ${{ env.build_version }} ${{ github.event.inputs.device }}
-        cd openwrt
-        if [ "${{ github.event.inputs.version }}" = release ]; then
-          tags=OpenWrt-$(git describe --abbrev=0 --tags)
-        else
-          tags=snapshot-24.10-$(git log -n 1 --date=format:"%Y%m%d" --format="%cd")-$(git log --pretty=format:"%h" -1)
-        fi
-        echo "latest_release=$tags" >>$GITHUB_ENV
-
-    - name: Extensive logs after a failed compilation
-      working-directory: /builder
-      if: steps.compile.outcome == 'failure'
-      run: |
-        cd openwrt
-        make V=s
-
-    - name: Delete Cached
-      if: ${{ github.event.inputs.ccache == 'true' && github.event.inputs.device != 'armv8' && github.event.inputs.device != 'nanopi-r4s' }}
-      continue-on-error: true
-      working-directory: /builder
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GH_REPO: ${{ github.repository }}
-      run: |
-        gh cache delete openwrt-24.10-${{ github.event.inputs.device }}-ccache || true
-
-    - name: Save Cached
-      if: ${{ github.event.inputs.ccache == 'true' && github.event.inputs.device != 'armv8' && github.event.inputs.device != 'nanopi-r4s' }}
-      continue-on-error: true
-      uses: actions/cache/save@v4
-      with:
-        path: /builder/.ccache
-        key: openwrt-24.10-${{ github.event.inputs.device }}-ccache
-
-    - name: Create ccache tar files
-      if: ${{ github.event.inputs.ccache == 'true' && github.event.inputs.device == 'armv8' || github.event.inputs.device == 'nanopi-r4s' }}
-      continue-on-error: true
-      working-directory: /builder
-      run: |
-        mkdir -p ccache
-        tar cf - .ccache | split -d -b 1800m - ccache/${{ github.event.inputs.device }}.tar.
-
-    - name: Upload Cached (releases - ccache)
-      if: ${{ github.event.inputs.ccache == 'true' && github.event.inputs.device == 'armv8' || github.event.inputs.device == 'nanopi-r4s' }}
-      continue-on-error: true
-      uses: ncipollo/release-action@v1.14.0
-      with:
-        name: ccache
-        allowUpdates: true
-        tag: ccache
-        commit: master
-        replacesArtifacts: true
-        prerelease: true
-        token: ${{ secrets.GITHUB_TOKEN }}
-        artifacts: |
-          ${{ env.build_dir }}/ccache/*
-
-    - name: Prepare Firmware Files
-      working-directory: /builder
-      run: |
-        mkdir -p rom info
-        if [ "${{ github.event.inputs.device }}" = "nanopi-r4s" ]; then
-          cp -a openwrt/bin/targets/rockchip/*/*.img.gz rom/
-          cp -a openwrt/bin/targets/rockchip/*/*-r4s.manifest info/manifest.txt
-          cp -a openwrt/bin/targets/rockchip/*/config.buildinfo info/config.buildinfo
-          cd rom && sha256sum *gz > ../info/sha256sums.txt
-        elif [ "${{ github.event.inputs.device }}" = "nanopi-r5s" ]; then
-          cp -a openwrt/bin/targets/rockchip/*/*.img.gz rom/
-          cp -a openwrt/bin/targets/rockchip/*/*.manifest info/manifest.txt
-          cp -a openwrt/bin/targets/rockchip/*/config.buildinfo info/config.buildinfo
-          cd rom && sha256sum *gz > ../info/sha256sums.txt
-        elif [ "${{ github.event.inputs.device }}" = "x86_64" ]; then
-          cp -a openwrt/bin/targets/x86/*/*-ext4-combined-efi.img.gz rom/
-          cp -a openwrt/bin/targets/x86/*/*-squashfs-combined-efi.img.gz rom/
-          cp -a openwrt/bin/targets/x86/*/*-generic-rootfs.tar.gz rom/
-          cp -a openwrt/bin/targets/x86/*/*-x86-64-generic.manifest info/manifest.txt
-          cp -a openwrt/bin/targets/x86/*/config.buildinfo info/config.buildinfo
-          cd rom && sha256sum *gz > ../info/sha256sums.txt
-        elif [ "${{ github.event.inputs.device }}" = "netgear_r8500" ]; then
-          cp -a openwrt/bin/targets/bcm53xx/generic/*-bcm53xx-generic-netgear_r8500-squashfs.chk rom/
-          cp -a openwrt/bin/targets/bcm53xx/generic/*.manifest info/manifest.txt
-          cp -a openwrt/bin/targets/bcm53xx/generic/config.buildinfo info/config.buildinfo
-          cd rom && sha256sum * > ../info/sha256sums.txt
-        elif [ "${{ github.event.inputs.device }}" = "armv8" ]; then
-          tar zcf rom/u-boot-qemu_armv8.tar.gz -C openwrt/bin/targets/armsr/armv8*/ ./u-boot-qemu_armv8
-          cp -a openwrt/bin/targets/armsr/armv8*/*-generic-initramfs-kernel.bin rom/
-          cp -a openwrt/bin/targets/armsr/armv8*/*-generic-kernel.bin rom/
-          cp -a openwrt/bin/targets/armsr/armv8*/*-generic-ext4-combined-efi.img.gz rom/
-          cp -a openwrt/bin/targets/armsr/armv8*/*-generic-squashfs-combined-efi.img.gz rom/
-          cp -a openwrt/bin/targets/armsr/armv8*/*-rootfs.tar.gz rom/
-          cp -a openwrt/bin/targets/armsr/armv8*/*.manifest info/manifest.txt
-          cp -a openwrt/bin/targets/armsr/armv8*/config.buildinfo info/config.buildinfo
-          cd rom && sha256sum * > ../info/sha256sums.txt
-        fi
-
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ github.event.inputs.device }}-openwrt-${{ env.latest_release }}
-        path: ${{ env.build_dir }}/rom/*
-
-    - name: Create release
-      continue-on-error: true
-      uses: ncipollo/release-action@v1
-      with:
-        name: ${{ env.latest_release }}
-        allowUpdates: true
-        tag: ${{ env.latest_release }}
-        commit: master
-        replacesArtifacts: true
-        token: ${{ secrets.GITHUB_TOKEN }}
-        artifacts: ${{ env.build_dir }}/rom/*
+      # 上传固件
+      - name: Upload Firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-${{ github.event.inputs.device }}
+          path: /builder/output
