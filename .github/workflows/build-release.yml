@@ -65,7 +65,7 @@ jobs:
           linux-headers-$(uname -r)
 
     - name: Install Cilium (and Cilium dependencies)
-        run: |
+      run: |
         # Clone Cilium's main branch from GitHub
         git clone --branch main https://github.com/cilium/cilium.git /tmp/cilium
         cd /tmp/cilium
