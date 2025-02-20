@@ -92,13 +92,10 @@ export KERNEL_BRANCH="MAIN"  # 设置为 MAIN 版本
 # Step 2: Clone Xanmod Kernel
 echo -e "\n${GREEN_COLOR}Cloning Xanmod kernel...${RES}\r\n"
 git clone --depth=1 --branch $KERNEL_BRANCH $KERNEL_URL
-
-# Step 3: Enter Xanmod kernel directory and configure
 cd linux
-echo -e "\n${GREEN_COLOR}Configuring Xanmod kernel...${RES}\r\n"
-make defconfig
+make defconfig  # 初始化 Xanmod 内核的默认配置
 
-# Step 4: Set kernel version for Xanmod
+# Step 3: Set kernel version for Xanmod
 get_kernel_version="Xanmod-$(git describe --abbrev=0 --tags)"
 kmod_hash=$(echo -e "$get_kernel_version" | awk -F'HASH-' '{print $2}' | awk '{print $1}' | tail -1 | md5sum | awk '{print $1}')
 kmodpkg_name=$(echo $get_kernel_version~$kmod_hash)
