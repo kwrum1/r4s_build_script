@@ -34,7 +34,7 @@ on:
       build_options:
         description: 'Build options (separate multiple options with spaces)(编译额外选项)'
         required: false
-        default: 'BUILD_FAST=y ENABLE_BPF=y ENABLE_LTO=y ENABLE_LRNG=y ENABLE_MOLD=y KERNEL_CLANG_LTO=y'
+        default: 'BUILD_FAST=y ENABLE_BPF=y ENABLE_LTO=y ENABLE_LRNG=y ENABLE_MOLD=y ENABLE_DPDK=y KERNEL_CLANG_LTO=y'
         type: string
 
 jobs:
