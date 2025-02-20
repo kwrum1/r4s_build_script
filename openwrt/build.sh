@@ -85,83 +85,29 @@ if [ -z "$1" ] || [ "$2" != "nanopi-r4s" -a "$2" != "nanopi-r5s" -a "$2" != "x86
     exit 1
 fi
 
-# Source branch
-if [ "$1" = "dev" ]; then
-    export branch=openwrt-24.10
-    export version=dev
-elif [ "$1" = "rc2" ]; then
-    latest_release="v$(curl -s $mirror/tags/v24)"
-    export branch=$latest_release
-    export version=rc2
-fi
+# Step 1: Define Xanmod Kernel Source (Xanmod MAIN)
+export KERNEL_URL="https://github.com/xanmod/linux.git"
+export KERNEL_BRANCH="MAIN"  # 设置为 MAIN 版本
 
-# lan
-[ -n "$LAN" ] && export LAN=$LAN || export LAN=10.0.0.1
+# Step 2: Clone Xanmod Kernel
+echo -e "\n${GREEN_COLOR}Cloning Xanmod kernel...${RES}\r\n"
+git clone --depth=1 --branch $KERNEL_BRANCH $KERNEL_URL
 
-# platform
-[ "$2" = "armv8" ] && export platform="armv8" toolchain_arch="aarch64_generic"
-[ "$2" = "nanopi-r4s" ] && export platform="rk3399" toolchain_arch="aarch64_generic"
-[ "$2" = "nanopi-r5s" ] && export platform="rk3568" toolchain_arch="aarch64_generic"
-[ "$2" = "netgear_r8500" ] && export platform="bcm53xx" toolchain_arch="arm_cortex-a9"
-[ "$2" = "x86_64" ] && export platform="x86_64" toolchain_arch="x86_64"
+# Step 3: Enter Xanmod kernel directory and configure
+cd linux
+echo -e "\n${GREEN_COLOR}Configuring Xanmod kernel...${RES}\r\n"
+make defconfig
 
-# gcc14 & 15
-if [ "$USE_GCC13" = y ]; then
-    export USE_GCC13=y gcc_version=13
-elif [ "$USE_GCC14" = y ]; then
-    export USE_GCC14=y gcc_version=14
-elif [ "$USE_GCC15" = y ]; then
-    export USE_GCC15=y gcc_version=15
-else
-    export USE_GCC13=y gcc_version=13
-fi
-[ "$ENABLE_MOLD" = y ] && export ENABLE_MOLD=y
-
-# build.sh flags
-export \
-    ENABLE_BPF=$ENABLE_BPF \
-    ENABLE_DPDK=$ENABLE_DPDK \
-    ENABLE_GLIBC=$ENABLE_GLIBC \
-    ENABLE_LRNG=$ENABLE_LRNG \
-    KERNEL_CLANG_LTO=$KERNEL_CLANG_LTO
-
-# print version
-echo -e "\r\n${GREEN_COLOR}Building $branch${RES}\r\n"
-if [ "$platform" = "x86_64" ]; then
-    echo -e "${GREEN_COLOR}Model: x86_64${RES}"
-elif [ "$platform" = "armv8" ]; then
-    echo -e "${GREEN_COLOR}Model: armsr/armv8${RES}"
-    [ "$1" = "rc2" ] && model="armv8"
-elif [ "$platform" = "bcm53xx" ]; then
-    echo -e "${GREEN_COLOR}Model: netgear_r8500${RES}"
-    [ "$LAN" = "10.0.0.1" ] && export LAN="192.168.1.1"
-elif [ "$platform" = "rk3568" ]; then
-    echo -e "${GREEN_COLOR}Model: nanopi-r5s/r5c${RES}"
-    [ "$1" = "rc2" ] && model="nanopi-r5s"
-else
-    echo -e "${GREEN_COLOR}Model: nanopi-r4s${RES}"
-    [ "$1" = "rc2" ] && model="nanopi-r4s"
-fi
-get_kernel_version=$(curl -s $mirror/tags/kernel-6.12)
+# Step 4: Set kernel version for Xanmod
+get_kernel_version="Xanmod-$(git describe --abbrev=0 --tags)"
 kmod_hash=$(echo -e "$get_kernel_version" | awk -F'HASH-' '{print $2}' | awk '{print $1}' | tail -1 | md5sum | awk '{print $1}')
-kmodpkg_name=$(echo $(echo -e "$get_kernel_version" | awk -F'HASH-' '{print $2}' | awk '{print $1}')~$(echo $kmod_hash)-r1)
+kmodpkg_name=$(echo $get_kernel_version~$kmod_hash)
+
 echo -e "${GREEN_COLOR}Kernel: $kmodpkg_name ${RES}"
-echo -e "${GREEN_COLOR}Date: $CURRENT_DATE${RES}\r\n"
-echo -e "${GREEN_COLOR}SCRIPT_URL:${RES} ${BLUE_COLOR}$mirror${RES}\r\n"
-echo -e "${GREEN_COLOR}GCC VERSION: $gcc_version${RES}"
-[ -n "$LAN" ] && echo -e "${GREEN_COLOR}LAN: $LAN${RES}" || echo -e "${GREEN_COLOR}LAN: 10.0.0.1${RES}"
-[ "$ENABLE_GLIBC" = "y" ] && echo -e "${GREEN_COLOR}Standard C Library:${RES} ${BLUE_COLOR}glibc${RES}" || echo -e "${GREEN_COLOR}Standard C Library:${RES} ${BLUE_COLOR}musl${RES}"
-[ "$ENABLE_OTA" = "y" ] && echo -e "${GREEN_COLOR}ENABLE_OTA: true${RES}" || echo -e "${GREEN_COLOR}ENABLE_OTA:${RES} ${YELLOW_COLOR}false${RES}"
-[ "$ENABLE_DPDK" = "y" ] && echo -e "${GREEN_COLOR}ENABLE_DPDK: true${RES}" || echo -e "${GREEN_COLOR}ENABLE_DPDK:${RES} ${YELLOW_COLOR}false${RES}"
-[ "$ENABLE_MOLD" = "y" ] && echo -e "${GREEN_COLOR}ENABLE_MOLD: true${RES}" || echo -e "${GREEN_COLOR}ENABLE_MOLD:${RES} ${YELLOW_COLOR}false${RES}"
-[ "$ENABLE_BPF" = "y" ] && echo -e "${GREEN_COLOR}ENABLE_BPF: true${RES}" || echo -e "${GREEN_COLOR}ENABLE_BPF:${RES} ${RED_COLOR}false${RES}"
-[ "$ENABLE_LTO" = "y" ] && echo -e "${GREEN_COLOR}ENABLE_LTO: true${RES}" || echo -e "${GREEN_COLOR}ENABLE_LTO:${RES} ${RED_COLOR}false${RES}"
-[ "$ENABLE_LRNG" = "y" ] && echo -e "${GREEN_COLOR}ENABLE_LRNG: true${RES}" || echo -e "${GREEN_COLOR}ENABLE_LRNG:${RES} ${RED_COLOR}false${RES}"
-[ "$ENABLE_LOCAL_KMOD" = "y" ] && echo -e "${GREEN_COLOR}ENABLE_LOCAL_KMOD: true${RES}" || echo -e "${GREEN_COLOR}ENABLE_LOCAL_KMOD: false${RES}"
-[ "$BUILD_FAST" = "y" ] && echo -e "${GREEN_COLOR}BUILD_FAST: true${RES}" || echo -e "${GREEN_COLOR}BUILD_FAST:${RES} ${YELLOW_COLOR}false${RES}"
-[ "$ENABLE_CCACHE" = "y" ] && echo -e "${GREEN_COLOR}ENABLE_CCACHE: true${RES}" || echo -e "${GREEN_COLOR}ENABLE_CCACHE:${RES} ${YELLOW_COLOR}false${RES}"
-[ "$MINIMAL_BUILD" = "y" ] && echo -e "${GREEN_COLOR}MINIMAL_BUILD: true${RES}" || echo -e "${GREEN_COLOR}MINIMAL_BUILD: false${RES}"
-[ "$KERNEL_CLANG_LTO" = "y" ] && echo -e "${GREEN_COLOR}KERNEL_CLANG_LTO: true${RES}\r\n" || echo -e "${GREEN_COLOR}KERNEL_CLANG_LTO:${RES} ${YELLOW_COLOR}false${RES}\r\n"
+echo -e "${GREEN_COLOR}Kernel version: $get_kernel_version ${RES}"
+
+# Ensure the rest of the script uses Xanmod kernel
+export KERNEL_VERSION=$get_kernel_version
 
 # clean old files
 rm -rf openwrt master
@@ -403,6 +349,7 @@ else
     sed -i "/BUILD_ID/aBUILD_DATE=\"$CURRENT_DATE\"" package/base-files/files/usr/lib/os-release
     make -j$cores IGNORE_ERRORS="n m"
 fi
+
 
 # Compile time
 endtime=`date +'%Y-%m-%d %H:%M:%S'`
